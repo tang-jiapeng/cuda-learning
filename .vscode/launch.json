@@ -8,8 +8,11 @@
       "program": "${workspaceFolder}/build/elementwise/elementwise",
       "miDebuggerPath": "/usr/local/cuda/bin/cuda-gdb",
       "env": {
-        "CUDA_LAUNCH_BLOCKING": "1"
+        "CUDA_LAUNCH_BLOCKING": "1",
+        "CUDA_DEBUGGER_SOFTWARE_PREEMPTION": "1"
       },
+      "args": ["-k", "0"],
+      // "args": ["-k", "0", "-n", "1024", "-b", "256", "-g", "0", "-d", "0"], // Example args
       "setupCommands": [
         {
           "description": "Break on kernel launch",
