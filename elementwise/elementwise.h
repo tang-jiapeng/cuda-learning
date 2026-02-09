@@ -1,8 +1,11 @@
 #pragma once
 
-void host_add_fp32(const float* A, const float* B, float* C, int N);
+#include <functional>
+#include <string>
 
-void kernel_add_fp32(int whichKernel, int blockSize, int gridSize, float* d_A, float* d_B,
-                     float* d_C, int N);
+std::string get_kernel_name(int kernel_num);
 
-                     
+void host_add_fp32(float* A, float* B, float* C, int N);
+
+void launch_elementwise_add_kernel(int whichKernel, int blockSize, int gridSize, 
+                   float* d_A, float* d_B, float* d_C, int N);
