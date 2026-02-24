@@ -1,137 +1,91 @@
 #include <cuda_runtime.h>
 #include <iostream>
-#include "cmdline.h"
+#include <string>
+#include <vector>
+#include "args.h"
+#include "benchmark.h"
 #include "cuda_utils.cuh"
 #include "data_utils.h"
 #include "elementwise.h"
+#include "memory.h"
 
-// --- 辅助函数：分配和初始化内存 ---
-void init_host_data(float** ptr, int N, float start, float step) {
-    checkCudaErrors(cudaMallocHost((void**)ptr, N * sizeof(float)));
-    initialRangeData(*ptr, N, start, step);
-}
 
-// --- 辅助函数：运行单个 Benchmark ---
-void run_benchmark(int kernel_idx, int N, int blockSize, int gridSize, float* h_A,
-                   float* h_B, float* h_ref,            // Host data
-                   float* d_A, float* d_B, float* d_C)  // Device data
-{
-    std::string name = get_kernel_name(kernel_idx);
-    printf("----------------------------------------------------------------\n");
-    printf("Running Kernel [%d]: %s\n", kernel_idx, name.c_str());
-
-    // 预热 (Warm-up)
-    // 不计入时间，跑 10 次
-    for (int i = 0; i < 10; ++i) {
-        launch_elementwise_add_kernel(kernel_idx, blockSize, gridSize, d_A, d_B, d_C, N);
-    }
-    checkCudaErrors(cudaDeviceSynchronize());  // 确保预热完成
-
-    // 准备计时器
-    cudaEvent_t start, stop;
-    checkCudaErrors(cudaEventCreate(&start));
-    checkCudaErrors(cudaEventCreate(&stop));
-
-    // 正式测试 (Repeated Run)
-    const int n_repeats = 100;  // 循环运行 100 次取平均
-
-    checkCudaErrors(cudaEventRecord(start));
-
-    for (int i = 0; i < n_repeats; ++i) {
-        launch_elementwise_add_kernel(kernel_idx, blockSize, gridSize, d_A, d_B, d_C, N);
-    }
-
-    checkCudaErrors(cudaEventRecord(stop));
-    checkCudaErrors(cudaEventSynchronize(stop));
-    getLastCudaError("Kernel execution failed");
-
-    // 计算耗时 (总时间 / 次数)
-    float total_milliseconds = 0;
-    checkCudaErrors(cudaEventElapsedTime(&total_milliseconds, start, stop));
-    float avg_milliseconds = total_milliseconds / n_repeats;
-
-    // 校验结果 (只需要校验最后一次运行的结果)
-    float* h_C = nullptr;
-    checkCudaErrors(cudaMallocHost((void**)&h_C, N * sizeof(float)));
-    checkCudaErrors(cudaMemcpy(h_C, d_C, N * sizeof(float), cudaMemcpyDeviceToHost));
-    bool is_correct = checkResult(h_ref, h_C, N);
-
-    // 打印结果
-    double bandwidth = (3.0 * N * sizeof(float)) / (avg_milliseconds / 1000.0) / 1e9;
-
-    printf("Status: %s\n", is_correct ? "PASS" : "FAIL");
-    printf("Time  : %.4f ms (Average of %d runs)\n", avg_milliseconds, n_repeats);
-    printf("BW    : %.2f GB/s\n", bandwidth);
-
-    // 清理
-    checkCudaErrors(cudaEventDestroy(start));
-    checkCudaErrors(cudaEventDestroy(stop));
-    checkCudaErrors(cudaFreeHost(h_C));
-}
+using namespace cuda_learning;
 
 int main(int argc, char* argv[]) {
-    cmdline::parser args;
-    args.add<int>("kernel", 'k', "kernel type (-1: run all, 0-3: specific)", false, -1,
-                  cmdline::range(-1, 3));
-    args.add<int>("N", 'n', "number of elements", false, 16 * 1024 * 1024);
-    args.add<int>("block", 'b', "block size", false, 256);
-    args.add<int>("grid", 'g', "grid size (0 for auto)", false, 0);
-    args.add<int>("device", 'd', "gpu id", false, 0);
-    args.parse_check(argc, argv);
+    // ---- Argument Parsing ----
+    ArgParser args;
+    args.add("kernel", "-1", "kernel index (-1: run all, 0-3: specific kernel)")
+        .add("N", "16777216", "number of elements (default: 16 M)")
+        .add("block", "256", "thread block size")
+        .add("grid", "0", "grid size (0 = auto-computed)")
+        .add("device", "0", "CUDA device id");
 
-    const int N = args.get<int>("N");
+    if (!args.parse(argc, argv)) return 0;
+
     const int user_kernel = args.get<int>("kernel");
-    const int blockSize = args.get<int>("block");
-    const int gridSize = args.get<int>("grid");
-    const int deviceID = args.get<int>("device");
-    const size_t nbytes = N * sizeof(float);
+    const int N = args.get<int>("N");
+    const int block_size = args.get<int>("block");
+    int grid_size = args.get<int>("grid");
+    const int device_id = args.get<int>("device");
 
-    // --- 设置设备 ---
-    cudaDeviceProp deviceProp;
-    checkCudaErrors(cudaGetDeviceProperties(&deviceProp, deviceID));
-    checkCudaErrors(cudaSetDevice(deviceID));
-    std::cout << "Device: " << deviceProp.name << ", N: " << N << " elements"
-              << std::endl;
+    // ---- Device Setup ----
+    checkCudaErrors(cudaSetDevice(device_id));
+    print_device_info(device_id);
 
-    // --- 准备 Host 数据 ---
-    float *h_A = nullptr, *h_B = nullptr, *h_ref = nullptr;
-    init_host_data(&h_A, N, 0.0f, 0.01f);
-    init_host_data(&h_B, N, 0.0f, -0.02f);
+    if (grid_size == 0) grid_size = (N + block_size - 1) / block_size;
+    std::cout << "N=" << N << "  block=" << block_size << "  grid=" << grid_size
+              << "\n\n";
 
-    // 计算 CPU 参考结果 (Reference)
-    checkCudaErrors(cudaMallocHost((void**)&h_ref, nbytes));
-    host_add_fp32(h_A, h_B, h_ref, N);
+    // ---- Pinned Host Buffers ----
+    HostBuffer<float> h_A(N), h_B(N), h_ref(N);
+    fill_range(h_A.get(), static_cast<std::size_t>(N), 0.0f, 0.01f);
+    fill_range(h_B.get(), static_cast<std::size_t>(N), 0.0f, -0.02f);
 
-    // --- 准备 Device 数据 ---
-    // 只需要分配一次，拷贝一次输入数据，所有 Benchmark 共用
-    float *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
-    checkCudaErrors(cudaMalloc((void**)&d_A, nbytes));
-    checkCudaErrors(cudaMalloc((void**)&d_B, nbytes));
-    checkCudaErrors(cudaMalloc((void**)&d_C, nbytes));
+    // CPU reference result
+    host_add_fp32(h_A.get(), h_B.get(), h_ref.get(), N);
 
-    checkCudaErrors(cudaMemcpy(d_A, h_A, nbytes, cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(d_B, h_B, nbytes, cudaMemcpyHostToDevice));
+    // ---- Device Buffers ----
+    DeviceBuffer<float> d_A(N), d_B(N), d_C(N);
+    d_A.upload(h_A.get());
+    d_B.upload(h_B.get());
 
-    // --- 运行 Benchmark ---
+    // ---- Shared verify lambda (downloads d_C, checks against h_ref) ----
+    HostBuffer<float> h_out(N);
+    auto verify = [&]() -> bool {
+        d_C.download(h_out.get());
+        return check_result(h_ref.get(), h_out.get(), static_cast<std::size_t>(N));
+    };
+
+    // bytes read + written by a single kernel launch (2 reads + 1 write)
+    const std::size_t bytes = 3ULL * static_cast<std::size_t>(N) * sizeof(float);
+
+    // ---- Peak bandwidth for roofline column ----
+    cudaDeviceProp prop{};
+    checkCudaErrors(cudaGetDeviceProperties(&prop, device_id));
+    const double peak_bw =
+        2.0 * prop.memoryClockRate * 1e3 * (prop.memoryBusWidth / 8) / 1e9;
+
+    // ---- Run Benchmarks ----
+    constexpr int n_kernels = 4;
+    std::vector<BenchmarkResult> results;
+
+    auto run_one = [&](int k) {
+        results.push_back(run_benchmark(
+            get_kernel_name(k),
+            [&] {
+                launch_elementwise_add_kernel(k, block_size, grid_size, d_A.get(),
+                                              d_B.get(), d_C.get(), N);
+            },
+            verify, bytes));
+    };
+
     if (user_kernel == -1) {
-        // 比较模式：循环运行所有实现
-        std::cout << "\n>>> Starting Comparison Benchmark <<<\n";
-        for (int k = 0; k <= 3; ++k) {
-            run_benchmark(k, N, blockSize, gridSize, h_A, h_B, h_ref, d_A, d_B, d_C);
-        }
+        for (int k = 0; k < n_kernels; ++k) run_one(k);
     } else {
-        // 单次运行模式
-        run_benchmark(user_kernel, N, blockSize, gridSize, h_A, h_B, h_ref, d_A, d_B,
-                      d_C);
+        run_one(user_kernel);
     }
 
-    // --- 释放资源 ---
-    checkCudaErrors(cudaFreeHost(h_A));
-    checkCudaErrors(cudaFreeHost(h_B));
-    checkCudaErrors(cudaFreeHost(h_ref));
-    checkCudaErrors(cudaFree(d_A));
-    checkCudaErrors(cudaFree(d_B));
-    checkCudaErrors(cudaFree(d_C));
-
+    print_results(results, peak_bw);
     return 0;
 }

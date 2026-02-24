@@ -1,56 +1,132 @@
 #pragma once
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <iostream>
 #include <random>
-#include <string>
+#include <string_view>
+#include <type_traits>
 
-void initialRangeData(float* p, const int size, float start, float step) {
-    for (int i = 0; i < size; ++i) {
-        p[i] = start + step * i;
+// All utilities live in the cuda_learning namespace to avoid polluting global scope.
+namespace cuda_learning {
+
+// ---------------------------------------------------------------------------
+// Data Initialization
+// ---------------------------------------------------------------------------
+
+/// Fill with sequential values: start, start+step, start+2*step, ...
+template <typename T>
+void fill_range(T* data, std::size_t n, T start = T{0}, T step = T{1}) {
+    for (std::size_t i = 0; i < n; ++i) {
+        data[i] = start + static_cast<T>(i) * step;
     }
 }
 
-void normalInitialData(float* p, const int size, unsigned int seed = 0, float mean = 0.0f,
-                       float std = 1.0f) {
-    std::default_random_engine generator(seed);
-    std::normal_distribution<float> dist(mean, std);
-
-    for (int i = 0; i < size; ++i) {
-        p[i] = dist(generator);
+/// Fill with uniform random values in [low, high].
+template <typename T>
+void fill_uniform(T* data, std::size_t n, T low = T{0}, T high = T{1},
+                  unsigned seed = 42) {
+    std::mt19937 gen(seed);
+    if constexpr (std::is_floating_point_v<T>) {
+        std::uniform_real_distribution<T> dist(low, high);
+        for (std::size_t i = 0; i < n; ++i) data[i] = dist(gen);
+    } else {
+        std::uniform_int_distribution<T> dist(low, high);
+        for (std::size_t i = 0; i < n; ++i) data[i] = dist(gen);
     }
 }
 
-bool checkResult(float* hostRef, float* gpuRef, const int N, float eps = 1.0E-4f) {
-    bool match = true;
-    for (int i = 0; i < N; ++i) {
-        if (abs(hostRef[i] - gpuRef[i]) > eps) {
-            printf("i: [%d], host: [%f], gpu: [%f]\n, err: [%f]", i, hostRef[i],
-                   gpuRef[i], abs(hostRef[i] - gpuRef[i]));
-            match = false;
-            break;
+/// Fill with values drawn from N(mean, std_dev).
+template <typename T>
+void fill_normal(T* data, std::size_t n, T mean = T{0}, T std_dev = T{1},
+                 unsigned seed = 42) {
+    static_assert(std::is_floating_point_v<T>,
+                  "fill_normal requires a floating-point type");
+    std::mt19937 gen(seed);
+    std::normal_distribution<T> dist(mean, std_dev);
+    for (std::size_t i = 0; i < n; ++i) data[i] = dist(gen);
+}
+
+/// Fill every element with a constant value.
+template <typename T>
+void fill_constant(T* data, std::size_t n, T val) {
+    std::fill(data, data + n, val);
+}
+
+// ---------------------------------------------------------------------------
+// Error Metrics
+// ---------------------------------------------------------------------------
+
+/// Maximum absolute element-wise error: max_i |ref[i] - test[i]|
+template <typename T>
+T max_abs_error(const T* ref, const T* test, std::size_t n) {
+    T max_err{0};
+    for (std::size_t i = 0; i < n; ++i) {
+        max_err = std::max(max_err, std::abs(ref[i] - test[i]));
+    }
+    return max_err;
+}
+
+/// Mean absolute error: (1/n) * sum_i |ref[i] - test[i]|
+template <typename T>
+double mean_abs_error(const T* ref, const T* test, std::size_t n) {
+    double sum = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        sum += std::abs(static_cast<double>(ref[i]) - static_cast<double>(test[i]));
+    }
+    return sum / static_cast<double>(n);
+}
+
+// ---------------------------------------------------------------------------
+// Correctness Check
+// ---------------------------------------------------------------------------
+
+/// Returns true if all |ref[i] - test[i]| <= atol.
+/// On the first failure, prints a diagnostic if verbose == true.
+template <typename T>
+bool check_result(const T* ref, const T* test, std::size_t n,
+                  T atol = static_cast<T>(1e-4), bool verbose = true) {
+    for (std::size_t i = 0; i < n; ++i) {
+        const T err = std::abs(ref[i] - test[i]);
+        if (err > atol) {
+            if (verbose) {
+                std::cout << "[MISMATCH] idx=" << i << "  ref=" << ref[i]
+                          << "  test=" << test[i] << "  err=" << err << "\n";
+            }
+            return false;
         }
     }
-
-    return match;
+    return true;
 }
 
+// ---------------------------------------------------------------------------
+// Pretty Printers
+// ---------------------------------------------------------------------------
+
+/// Print a 1-D array to stdout with an optional label.
 template <typename T>
-void print1D(T* data, const int N) {
-    for (int i = 0; i < N; ++i) {
-        std::cout << data[i] << ",";
+void print_1d(const T* data, std::size_t n, std::string_view label = "") {
+    if (!label.empty()) std::cout << label << ": ";
+    for (std::size_t i = 0; i < n; ++i) {
+        std::cout << data[i];
+        if (i + 1 < n) std::cout << ", ";
     }
-    std::cout << std::endl;
+    std::cout << "\n";
 }
 
+/// Print a 2-D row-major matrix to stdout with an optional label.
 template <typename T>
-void print2D(T* matrix, const int rows, const int cols) {
-    for (int i = 0; i < rows; ++i) {
-        for (int j = 0; j < cols; ++j) {
-            std::cout << matrix[i * cols + j] << ",";
+void print_2d(const T* data, std::size_t rows, std::size_t cols,
+              std::string_view label = "") {
+    if (!label.empty()) std::cout << label << ":\n";
+    for (std::size_t r = 0; r < rows; ++r) {
+        for (std::size_t c = 0; c < cols; ++c) {
+            std::cout << data[r * cols + c];
+            if (c + 1 < cols) std::cout << "\t";
         }
-        std::cout << std::endl;
+        std::cout << "\n";
     }
 }
+
+}  // namespace cuda_learning
