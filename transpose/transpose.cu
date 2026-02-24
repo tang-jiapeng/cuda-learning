@@ -361,3 +361,96 @@ void host_transpose(float* A, float* B, const int M, const int N) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kernel registry
+// ---------------------------------------------------------------------------
+
+std::string get_kernel_name(int kernel_num) {
+    switch (kernel_num) {
+        case 0:
+            return "NaiveRow";
+        case 1:
+            return "NaiveCol";
+        case 2:
+            return "ColNelements<64x64>";
+        case 3:
+            return "Shared<32x32>";
+        case 4:
+            return "SharedPadding<32x33>";
+        case 5:
+            return "SharedSwizzling<32x32>";
+        case 6:
+            return "SharedPaddingUnroll";
+        case 7:
+            return "SharedSwizzlingUnroll";
+        default:
+            return "Unknown";
+    }
+}
+
+void launch_transpose_kernel(int whichKernel, float* A, float* B, const int M,
+                             const int N, int blockDimX) {
+    // Most kernels use a 2D block of (32, 8)
+    const dim3 block32x8(32, 8);
+
+    switch (whichKernel) {
+        case 0: {
+            // NaiveRow: each thread handles one element; block covers (blockDimX x
+            // blockDimX)
+            dim3 block(blockDimX, blockDimX);
+            dim3 grid((N + block.x - 1) / block.x, (M + block.y - 1) / block.y);
+            transposeNativeRow<<<grid, block>>>(A, B, M, N);
+            break;
+        }
+        case 1: {
+            // NaiveCol: iterates over columns
+            dim3 block(blockDimX, blockDimX);
+            dim3 grid((M + block.x - 1) / block.x, (N + block.y - 1) / block.y);
+            transposeNativeCol<<<grid, block>>>(A, B, M, N);
+            break;
+        }
+        case 2: {
+            // ColNelements<64, 64>: tile 64x64, block 32x8
+            constexpr int Bm = 64, Bn = 64;
+            dim3 grid((M + Bm - 1) / Bm, (N + Bn - 1) / Bn);
+            transposeColNelements<Bm, Bn><<<grid, block32x8>>>(A, B, M, N);
+            break;
+        }
+        case 3: {
+            // Shared<32, 32>: tile 32x32, block 32x8
+            constexpr int Bm = 32, Bn = 32;
+            dim3 grid((N + Bn - 1) / Bn, (M + Bm - 1) / Bm);
+            transposeShared<Bm, Bn><<<grid, block32x8>>>(A, B, M, N);
+            break;
+        }
+        case 4: {
+            // SharedPadding<32, 32>: tile 32x(32+1), block 32x8
+            constexpr int Bm = 32, Bn = 32;
+            dim3 grid((N + Bn - 1) / Bn, (M + Bm - 1) / Bm);
+            transposeSharedPadding<Bm, Bn><<<grid, block32x8>>>(A, B, M, N);
+            break;
+        }
+        case 5: {
+            // SharedSwizzling<32, 32>: tile 32x32, block 32x8
+            constexpr int Bm = 32, Bn = 32;
+            dim3 grid((N + Bn - 1) / Bn, (M + Bm - 1) / Bm);
+            transposeSharedSwizzling<Bm, Bn><<<grid, block32x8>>>(A, B, M, N);
+            break;
+        }
+        case 6: {
+            // SharedPaddingUnroll: fixed 32x32 tile, block 32x8
+            dim3 grid((N + 31) / 32, (M + 31) / 32);
+            transposeSharedPaddingUnroll<<<grid, block32x8>>>(A, B, M, N);
+            break;
+        }
+        case 7: {
+            // SharedSwizzlingUnroll: fixed 32x32 tile, block 32x8
+            dim3 grid((N + 31) / 32, (M + 31) / 32);
+            transposeSharedSwizzlingUnroll<<<grid, block32x8>>>(A, B, M, N);
+            break;
+        }
+        default:
+            break;
+    }
+}

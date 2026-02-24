@@ -55,7 +55,7 @@ class ArgParser {
             }
 
             // Accept --key=value
-            if (arg.starts_with("--")) {
+            if (arg.rfind("--", 0) == 0) {
                 const auto eq = arg.find('=');
                 if (eq != std::string_view::npos) {
                     values_[std::string(arg.substr(2, eq - 2))] =
