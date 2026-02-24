@@ -27,3 +27,4 @@ message(STATUS "Current Build Type: ${CMAKE_BUILD_TYPE}")
 
 add_subdirectory(elementwise)
 add_subdirectory(transpose)
+add_subdirectory(reduce)

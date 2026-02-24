@@ -3,11 +3,17 @@
         {
             "name": "Linux",
             "includePath": [
+                "/usr/local/cuda/include/**",
                 "${workspaceFolder}/**",
-                "/usr/local/cuda/include"
+                "/usr/local/include"
+            ],
+            "compileCommands": [
+                "${workspaceFolder}/build/compile_commands.json"
             ],
             "defines": [],
-            "compilerPath": "/usr/bin/g++-13"
+            "intelliSenseMode": "linux-gcc-x64",
+            "compilerPath": "/usr/bin/g++-13",
+            "cppStandard": "c++17"
         }
     ],
     "version": 4
