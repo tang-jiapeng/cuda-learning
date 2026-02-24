@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -18,6 +19,10 @@ namespace cuda_learning {
 struct BenchmarkConfig {
     int warmup_iters{10};  /// iterations used for warm-up (not counted in time)
     int bench_iters{100};  /// iterations used for timing
+    /// Optional: called BEFORE each timed iteration (not included in timing).
+    /// Useful when the kernel mutates its input (e.g. in-place reductions) and
+    /// the scratch buffer must be restored between iterations.
+    std::function<void()> reset_fn;
 };
 
 struct BenchmarkResult {
@@ -51,10 +56,18 @@ BenchmarkResult run_benchmark(std::string_view name, KernelFn&& kernel_fn,
     result.name = std::string(name);
 
     // ---- Warm-up ----
-    for (int i = 0; i < cfg.warmup_iters; ++i) kernel_fn();
+    // If a reset is required (e.g. in-place kernels), apply it before each call
+    // so each warm-up iteration sees a fresh input.
+    for (int i = 0; i < cfg.warmup_iters; ++i) {
+        if (cfg.reset_fn) cfg.reset_fn();
+        kernel_fn();
+    }
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // ---- Correctness check (once, after warm-up) ----
+    // ---- Correctness check (one clean run after warm-up) ----
+    if (cfg.reset_fn) cfg.reset_fn();
+    kernel_fn();
+    checkCudaErrors(cudaDeviceSynchronize());
     result.passed = verify_fn();
 
     // ---- Timing ----
@@ -62,14 +75,31 @@ BenchmarkResult run_benchmark(std::string_view name, KernelFn&& kernel_fn,
     checkCudaErrors(cudaEventCreate(&ev_start));
     checkCudaErrors(cudaEventCreate(&ev_stop));
 
-    checkCudaErrors(cudaEventRecord(ev_start));
-    for (int i = 0; i < cfg.bench_iters; ++i) kernel_fn();
-    checkCudaErrors(cudaEventRecord(ev_stop));
-    checkCudaErrors(cudaEventSynchronize(ev_stop));
+    float total_ms = 0.0f;
+
+    if (cfg.reset_fn) {
+        // Per-iteration reset: time each call individually and accumulate.
+        for (int i = 0; i < cfg.bench_iters; ++i) {
+            cfg.reset_fn();
+            checkCudaErrors(cudaEventRecord(ev_start));
+            kernel_fn();
+            checkCudaErrors(cudaEventRecord(ev_stop));
+            checkCudaErrors(cudaEventSynchronize(ev_stop));
+            float ms = 0.0f;
+            checkCudaErrors(cudaEventElapsedTime(&ms, ev_start, ev_stop));
+            total_ms += ms;
+        }
+    } else {
+        // No reset needed: single contiguous timing region.
+        checkCudaErrors(cudaEventRecord(ev_start));
+        for (int i = 0; i < cfg.bench_iters; ++i) kernel_fn();
+        checkCudaErrors(cudaEventRecord(ev_stop));
+        checkCudaErrors(cudaEventSynchronize(ev_stop));
+        checkCudaErrors(cudaEventElapsedTime(&total_ms, ev_start, ev_stop));
+    }
+
     getLastCudaError("Kernel execution failed");
 
-    float total_ms = 0.0f;
-    checkCudaErrors(cudaEventElapsedTime(&total_ms, ev_start, ev_stop));
     result.avg_ms = total_ms / static_cast<float>(cfg.bench_iters);
     result.bandwidth_GBs =
         static_cast<double>(bytes_accessed) / (result.avg_ms / 1000.0) / 1e9;

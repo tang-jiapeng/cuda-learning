@@ -3,6 +3,7 @@
 #include <vector>
 #include "args.h"
 #include "benchmark.h"
+#include "cublas_transpose.h"
 #include "cuda_utils.cuh"
 #include "data_utils.h"
 #include "memory.h"
@@ -78,6 +79,14 @@ int main(int argc, char* argv[]) {
         for (int k = 0; k < n_kernels; ++k) run_one(k);
     } else {
         run_one(user_kernel);
+    }
+
+    // ---- cuBLAS cublasSgeam Baseline ----
+    if (user_kernel == -1) {
+        CublasHandle cublas;
+        results.push_back(run_benchmark(
+            "cublasSgeam (cuBLAS)", [&] { cublas.transpose(d_A.get(), d_B.get(), M, N); },
+            verify, bytes));
     }
 
     print_results(results, peak_bw);

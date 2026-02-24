@@ -1,7 +1,7 @@
+#include <algorithm>
 #include "reduce.h"
 
 #define WARP_SIZE 32
-#define CEIL(a, b) (((a) + (b) - 1) / (b))
 #define FLOAT4(value) (reinterpret_cast<float4*>(&(value))[0])
 
 // version 0: 简单实现，存在线程束分化问题
@@ -367,4 +367,114 @@ float pairwise_sum(float* A, int start, int stop) {
 
 float host_reduce_sum(float* A, const int N) {
     return pairwise_sum(A, 0, N - 1);
+}
+
+// ---------------------------------------------------------------------------
+// Kernel registry
+// ---------------------------------------------------------------------------
+
+std::string get_kernel_name(int kernel_num) {
+    switch (kernel_num) {
+        case 0:
+            return "reduce0  (naive, warp diverge)";
+        case 1:
+            return "reduce0_5 (bitwise mod)";
+        case 2:
+            return "reduce1  (no diverge, bank conflict)";
+        case 3:
+            return "reduce2  (stride-down, no bank conflict)";
+        case 4:
+            return "reduce3  (first-add on load)";
+        case 5:
+            return "reduce4  (warp shuffle last 32)";
+        case 6:
+            return "reduce5<256> (loop unroll)";
+        case 7:
+            return "reduce6<256> (grid-stride)";
+        case 8:
+            return "reduce6_vec4<256> (grid-stride + vec4)";
+        case 9:
+            return "reduce7<256> (warp-reduce-first)";
+        default:
+            return "Unknown";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-stage reduction launcher
+//
+// All kernels write one partial sum per block back to d_A[blockIdx.x], so we
+// iterate until a single element remains.  d_A is modified in-place.
+// ---------------------------------------------------------------------------
+
+static inline int ceil_div(int a, int b) {
+    return (a + b - 1) / b;
+}
+
+void launch_reduce_sum_kernel(int whichKernel, float* d_A, const int N) {
+    constexpr int kBlockSize = 256;
+    constexpr int kMaxGridSz = 1024;  // cap for grid-stride kernels (pass 1)
+
+    int remaining = N;
+
+    while (remaining > 1) {
+        int grid = 0;
+        int smem = kBlockSize * static_cast<int>(sizeof(float));
+
+        switch (whichKernel) {
+            // ---- 1 element per thread ----
+            case 0:
+                grid = ceil_div(remaining, kBlockSize);
+                reduce0<<<grid, kBlockSize, smem>>>(d_A, remaining);
+                break;
+            case 1:
+                grid = ceil_div(remaining, kBlockSize);
+                reduce0_5<<<grid, kBlockSize, smem>>>(d_A, remaining);
+                break;
+            case 2:
+                grid = ceil_div(remaining, kBlockSize);
+                reduce1<<<grid, kBlockSize, smem>>>(d_A, remaining);
+                break;
+            case 3:
+                grid = ceil_div(remaining, kBlockSize);
+                reduce2<<<grid, kBlockSize, smem>>>(d_A, remaining);
+                break;
+            // ---- 2 elements per thread on load ----
+            case 4:
+                grid = ceil_div(remaining, kBlockSize * 2);
+                reduce3<<<grid, kBlockSize, smem>>>(d_A, remaining);
+                break;
+            case 5:
+                grid = ceil_div(remaining, kBlockSize * 2);
+                reduce4<<<grid, kBlockSize, smem>>>(d_A, remaining);
+                break;
+            case 6:
+                grid = ceil_div(remaining, kBlockSize * 2);
+                reduce5<kBlockSize><<<grid, kBlockSize, smem>>>(d_A, remaining);
+                break;
+            // ---- grid-stride loop: cap grid to kMaxGridSz for 1st pass ----
+            case 7:
+                grid = std::min(ceil_div(remaining, kBlockSize), kMaxGridSz);
+                reduce6<kBlockSize><<<grid, kBlockSize, smem>>>(d_A, remaining);
+                break;
+            // ---- vec4 grid-stride: 4 elements per thread ----
+            case 8:
+                grid = ceil_div(remaining, kBlockSize * 4);
+                if (grid == 0) grid = 1;
+                reduce6_vec4<kBlockSize><<<grid, kBlockSize, smem>>>(d_A, remaining);
+                break;
+            // ---- warp-first grid-stride ----
+            case 9: {
+                grid = std::min(ceil_div(remaining, kBlockSize), kMaxGridSz);
+                // smem only needs NUM_WARPS floats; use full block allocation for safety
+                constexpr int kNumWarps = CEIL(kBlockSize, WARP_SIZE);
+                reduce7<kBlockSize>
+                    <<<grid, kBlockSize, kNumWarps * sizeof(float)>>>(d_A, remaining);
+                break;
+            }
+            default:
+                return;
+        }
+        remaining = grid;
+    }
 }
