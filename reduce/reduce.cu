@@ -24,9 +24,8 @@ __global__ void reduce0(float* d_A, const int N) {
         if ((tid % (s * 2)) == 0) {
             data[tid] += data[tid + s];
         }
+        __syncthreads();  // 每轮迭代后同步，防止下一轮读到未写完的值
     }
-
-    __syncthreads();
 
     // block 负责数据的求和结果存储在 data[0]，由 0 号 thread 写入 d_A[blockIdx.x] 中
     if (tid == 0) {
@@ -49,9 +48,8 @@ __global__ void reduce0_5(float* d_A, const int N) {
         if ((tid & (s * 2 - 1)) == 0) {
             data[tid] += data[tid + s];
         }
+        __syncthreads();  // 每轮迭代后同步
     }
-
-    __syncthreads();
 
     if (tid == 0) {
         d_A[blockIdx.x] = data[0];
@@ -76,9 +74,8 @@ __global__ void reduce1(float* d_A, const int N) {
         if (index < blockDim.x) {
             data[index] += data[index + s];
         }
+        __syncthreads();  // 每轮迭代后同步
     }
-
-    __syncthreads();
 
     if (tid == 0) {
         d_A[blockIdx.x] = data[0];
@@ -104,9 +101,8 @@ __global__ void reduce2(float* d_A, const int N) {
         if (tid < s) {
             data[tid] += data[tid + s];
         }
+        __syncthreads();  // 每轮迭代后同步
     }
-
-    __syncthreads();
 
     if (tid == 0) {
         d_A[blockIdx.x] = data[0];
@@ -135,9 +131,8 @@ __global__ void reduce3(float* d_A, const int N) {
         if (tid < s) {
             data[tid] += data[tid + s];
         }
+        __syncthreads();  // 每轮迭代后同步
     }
-
-    __syncthreads();
 
     if (tid == 0) {
         d_A[blockIdx.x] = data[0];
@@ -176,17 +171,16 @@ __global__ void reduce4(float* d_A, const int N) {
         if (tid < s) {
             data[tid] = sum = sum + data[tid + s];
         }
+        __syncthreads();  // 每轮迭代后同步
     }
 
-    __syncthreads();
-
-    // WarpReduce
+    // WarpReduce：最后 32 个元素用 warp shuffle 完成，结果在寄存器 sum 中
     if (tid < 32) {
         sum = warpReduce<WARP_SIZE>(sum);
     }
 
     if (tid == 0) {
-        d_A[blockIdx.x] = data[0];
+        d_A[blockIdx.x] = sum;  // warpReduce 结果在 sum 里，而非 data[0]
     }
 }
 
