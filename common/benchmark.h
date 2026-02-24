@@ -115,7 +115,7 @@ BenchmarkResult run_benchmark(std::string_view name, KernelFn&& kernel_fn,
 
 inline void print_results(const std::vector<BenchmarkResult>& results,
                           double peak_bandwidth_GBs = 0.0) {
-    constexpr int kColName = 35;
+    constexpr int kColName = 45;
     constexpr int kColStat = 8;
     constexpr int kColTime = 14;
     constexpr int kColBW = 14;
