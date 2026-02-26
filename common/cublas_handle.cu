@@ -30,6 +30,10 @@ static inline void check_cublas(cublasStatus_t status, const char* file, int lin
 CublasHandle::CublasHandle() {
     cublasHandle_t h;
     CUBLAS_CHECK(cublasCreate(&h));
+    // Disable TF32 Tensor Core math on Ampere+ so that cuBLAS produces pure
+    // IEEE fp32 results — otherwise TF32 (10-bit mantissa) produces ~1e-4
+    // differences vs hand-written fp32 kernels, causing false MISMATCH.
+    CUBLAS_CHECK(cublasSetMathMode(h, CUBLAS_PEDANTIC_MATH));
     handle_ = reinterpret_cast<void*>(h);
 }
 

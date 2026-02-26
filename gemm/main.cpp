@@ -10,7 +10,6 @@
 #include "gemm.h"
 #include "memory.h"
 
-
 using namespace cuda_learning;
 
 int main(int argc, char* argv[]) {
@@ -58,10 +57,13 @@ int main(int argc, char* argv[]) {
     d_ref.download(h_ref.get());
 
     // ---- Verify Lambda ----
+    // atol scales with K: fp32 sum of K terms accumulates O(K*eps) rounding
+    // error (~1.2e-7 per op). Use K*1e-6 as a conservative safe threshold.
+    const float gemm_atol = static_cast<float>(K) * 1e-6f;
     HostBuffer<float> h_out(sizeOut);
     auto verify = [&]() -> bool {
         d_out.download(h_out.get());
-        return check_result(h_ref.get(), h_out.get(), sizeOut);
+        return check_result(h_ref.get(), h_out.get(), sizeOut, gemm_atol);
     };
 
     // GEMM reads A (M*K) and B (K*N) once, writes C (M*N) once
