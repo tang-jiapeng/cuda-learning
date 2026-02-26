@@ -114,23 +114,41 @@ BenchmarkResult run_benchmark(std::string_view name, KernelFn&& kernel_fn,
 // ---------------------------------------------------------------------------
 
 inline void print_results(const std::vector<BenchmarkResult>& results,
-                          double peak_bandwidth_GBs = 0.0) {
+                          double peak_bandwidth_GBs = 0.0,
+                          std::string_view baseline_name = "") {
     constexpr int kColName = 45;
     constexpr int kColStat = 8;
     constexpr int kColTime = 14;
     constexpr int kColBW = 14;
-    constexpr int kColEff = 10;
+    constexpr int kColEff = 12;
 
-    const bool show_eff = peak_bandwidth_GBs > 0.0;
+    // When a baseline is given, normalise latency to it instead of roofline BW.
+    float baseline_ms = 0.0f;
+    bool show_baseline = false;
+    if (!baseline_name.empty()) {
+        for (const auto& r : results) {
+            if (r.name == baseline_name) {
+                baseline_ms = r.avg_ms;
+                show_baseline = (baseline_ms > 0.0f);
+                break;
+            }
+        }
+    }
+
+    const bool show_roofline = !show_baseline && (peak_bandwidth_GBs > 0.0);
+    const bool show_extra = show_baseline || show_roofline;
     const int total_w =
-        kColName + kColStat + kColTime + kColBW + (show_eff ? kColEff : 0) + 4;
+        kColName + kColStat + kColTime + kColBW + (show_extra ? kColEff : 0) + 4;
     const std::string sep(total_w, '-');
 
     std::cout << "\n" << sep << "\n";
     std::cout << std::left << std::setw(kColName) << "Kernel" << std::right
               << std::setw(kColStat) << "Status" << std::setw(kColTime) << "Time (ms)"
               << std::setw(kColBW) << "BW (GB/s)";
-    if (show_eff) std::cout << std::setw(kColEff) << "Roofline%";
+    if (show_baseline)
+        std::cout << std::setw(kColEff) << "vs Baseline%";
+    else if (show_roofline)
+        std::cout << std::setw(kColEff) << "Roofline%";
     std::cout << "\n" << sep << "\n";
 
     for (const auto& r : results) {
@@ -139,7 +157,11 @@ inline void print_results(const std::vector<BenchmarkResult>& results,
                   << std::setw(kColTime) << std::fixed << std::setprecision(4) << r.avg_ms
                   << std::setw(kColBW) << std::fixed << std::setprecision(2)
                   << r.bandwidth_GBs;
-        if (show_eff) {
+        if (show_baseline) {
+            // baseline_ms / r.avg_ms * 100: baseline itself = 100%, faster > 100%
+            const double eff = static_cast<double>(baseline_ms) / r.avg_ms * 100.0;
+            std::cout << std::setw(kColEff) << std::fixed << std::setprecision(1) << eff;
+        } else if (show_roofline) {
             const double eff = r.bandwidth_GBs / peak_bandwidth_GBs * 100.0;
             std::cout << std::setw(kColEff) << std::fixed << std::setprecision(1) << eff;
         }

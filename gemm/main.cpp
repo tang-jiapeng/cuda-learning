@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <vector>
 #include "args.h"
@@ -69,11 +70,25 @@ int main(int argc, char* argv[]) {
     // GEMM reads A (M*K) and B (K*N) once, writes C (M*N) once
     const std::size_t bytes = (sizeA + sizeB + sizeOut) * sizeof(float);
 
-    // ---- Peak bandwidth ----
+    // ---- Device Properties ----
     cudaDeviceProp prop{};
     checkCudaErrors(cudaGetDeviceProperties(&prop, device_id));
-    const double peak_bw =
-        2.0 * prop.memoryClockRate * 1e3 * (prop.memoryBusWidth / 8) / 1e9;
+
+    // Peak FP32 TFLOPS: clockRate(kHz) * SM_count * FP32_cores_per_SM * 2 (FMA) / 1e9
+    // FP32 cores/SM by compute capability major.minor:
+    //   8.0 (A100): 64    8.6 (RTX 30xx): 128    9.0 (RTX 40xx): 128
+    //   7.x (Turing/Volta): 64
+    auto fp32_per_sm = [](int major, int minor) -> int {
+        if (major == 9) return 128;
+        if (major == 8) return (minor == 0) ? 64 : 128;  // A100 vs RTX 30xx
+        if (major == 7) return 64;
+        return 64;  // conservative fallback
+    };
+    const int cores_per_sm = fp32_per_sm(prop.major, prop.minor);
+    const double peak_tflops = static_cast<double>(prop.clockRate) * 1e3  // Hz
+                               * prop.multiProcessorCount * cores_per_sm *
+                               2  // FMA = 2 FLOPs
+                               / 1e12;
 
     // ---- Run Custom Kernels ----
     constexpr int n_kernels = 2;
@@ -104,6 +119,30 @@ int main(int argc, char* argv[]) {
         results.push_back(cublas_bench);
     }
 
-    print_results(results, peak_bw);
+    // GEMM is compute-bound: use cuBLAS as 100% baseline for relative efficiency
+    print_results(results, 0.0, "cuBLAS sgemm");
+
+    // ---- GEMM FLOPS Table ----
+    // FLOPs per call = 2 * M * K * N  (one multiply-add per element per k-step)
+    const double flops_per_call = 2.0 * M * K * N;
+
+    constexpr int kW0 = 45, kW1 = 10, kW2 = 14, kW3 = 12;
+    const std::string sep(kW0 + kW1 + kW2 + kW3 + 3, '-');
+    std::cout << "\n" << sep << "\n";
+    std::cout << std::left << std::setw(kW0) << "Kernel" << std::right << std::setw(kW1)
+              << "TFLOPS" << std::setw(kW2) << "Time (ms)" << std::setw(kW3) << "Compute%"
+              << "\n";
+    std::cout << sep << "\n";
+    for (const auto& r : results) {
+        double tflops = flops_per_call / (r.avg_ms / 1000.0) / 1e12;
+        double compute_pct = tflops / peak_tflops * 100.0;
+        std::cout << std::left << std::setw(kW0) << r.name << std::right << std::fixed
+                  << std::setprecision(2) << std::setw(kW1) << tflops << std::setw(kW2)
+                  << r.avg_ms << std::setw(kW3) << compute_pct << "\n";
+    }
+    std::cout << sep << "\n";
+    std::cout << "Peak FP32: " << std::fixed << std::setprecision(2) << peak_tflops
+              << " TFLOPS\n\n";
+
     return 0;
 }
