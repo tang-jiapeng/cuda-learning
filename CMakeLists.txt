@@ -25,6 +25,20 @@ set(CMAKE_CUDA_FLAGS_DEBUG "-g -G -O0")
 # 打印当前模式
 message(STATUS "Current Build Type: ${CMAKE_BUILD_TYPE}")
 
+# ---------------------------------------------------------------------------
+# common_gpu — shared static library for cuBLAS and CUB wrappers
+# ---------------------------------------------------------------------------
+add_library(common_gpu STATIC
+    common/cublas_handle.cu
+    common/cub_utils.cu
+)
+target_include_directories(common_gpu PUBLIC
+    ${CMAKE_SOURCE_DIR}/common
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
+target_link_libraries(common_gpu PUBLIC CUDA::cublas)
+set_target_properties(common_gpu PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
 add_subdirectory(elementwise)
 add_subdirectory(transpose)
 add_subdirectory(reduce)

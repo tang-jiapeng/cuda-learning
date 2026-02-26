@@ -4,7 +4,7 @@
 #include <vector>
 #include "args.h"
 #include "benchmark.h"
-#include "cub_reduce.h"
+#include "cub_utils.h"
 #include "cuda_utils.cuh"
 #include "data_utils.h"
 #include "memory.h"

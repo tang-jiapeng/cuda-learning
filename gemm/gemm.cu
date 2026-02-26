@@ -40,7 +40,7 @@ __global__ void blockTileGEMM(float* A, float* B, float* C, const int M, const i
 
     // 对于 tid 号线程，其位于 blockA 中的行列坐标为 (tid / A_BLOCK_X, tid % A_BLOCK_X)
     int A_THREAD_X = tid % A_BLOCK_X;
-    int A_THREAD_Y = tid / A_BLOCK_Y;
+    int A_THREAD_Y = tid / A_BLOCK_X;
 
     /*------ tileB ------*/
     // 写入 B tile 时，block 中 thread 排布尺寸为 (B_BLOCK_X, blockSize / B_BLOCK_X)
@@ -48,7 +48,7 @@ __global__ void blockTileGEMM(float* A, float* B, float* C, const int M, const i
 
     // 对于 tid 号线程，其位于 blockB 中的行列坐标为 (tid / B_BLOCK_X, tid % B_BLOCK_X)
     int B_THREAD_X = tid % B_BLOCK_X;
-    int B_THREAD_Y = tid / B_BLOCK_Y;
+    int B_THREAD_Y = tid / B_BLOCK_X;
 
     /*------ tileC ------*/
     constexpr int C_BLOCK_Y = blockSize / C_BLOCK_X;
@@ -70,8 +70,8 @@ __global__ void blockTileGEMM(float* A, float* B, float* C, const int M, const i
         for (int i = A_THREAD_Y; i < Bm; i += A_BLOCK_Y) {
             int r = r0 + i;
 #pragma unroll
-            for (int j = A_THREAD_X; j < Bn; j += A_BLOCK_X) {
-                int c = c0 + j;
+            for (int j = A_THREAD_X; j < Bk; j += A_BLOCK_X) {
+                int c = k + j;
                 As[i][j] = (r < M && c < K) ? A[r * K + c] : 0.f;
             }
         }
@@ -79,7 +79,7 @@ __global__ void blockTileGEMM(float* A, float* B, float* C, const int M, const i
         // 使用跨步循环，行方向的 stride 为 B_BLOCK_Y, 列方向的 stride 为 B_BLOCK_X
 #pragma unroll
         for (int i = B_THREAD_Y; i < Bk; i += B_BLOCK_Y) {
-            int r = r0 + i;
+            int r = k + i;
 #pragma unroll
             for (int j = B_THREAD_X; j < Bn; j += B_BLOCK_X) {
                 int c = c0 + j;
@@ -100,7 +100,7 @@ __global__ void blockTileGEMM(float* A, float* B, float* C, const int M, const i
 #pragma unroll
                 for (int j = 0; j < Tn; ++j) {
                     int c = C_THREAD_X + j * C_BLOCK_X;
-                    Ct[r][c] += As[r][p] * Bs[p][c];
+                    Ct[i][j] += As[r][p] * Bs[p][c];
                 }
             }
         }
@@ -124,6 +124,8 @@ std::string get_kernel_name(int kernel_num) {
     switch (kernel_num) {
         case 0:
             return "naiveGEMM";
+        case 1:
+            return "blockTileGEMM<128x128x8>";
         default:
             return "Unknown";
     }
@@ -157,6 +159,7 @@ void lauch_gemm_kernel(int whichKernel, float* A, float* B, float* out, const in
             dim3 block = 256;
             dim3 grid(CEIL(N, Bn), CEIL(M, Bm));
             blockTileGEMM<<<grid, block>>>(A, B, out, M, K, N);
+            break;
         }
         default:
             break;
