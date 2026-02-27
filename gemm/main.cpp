@@ -91,7 +91,7 @@ int main(int argc, char* argv[]) {
                                / 1e12;
 
     // ---- Run Custom Kernels ----
-    constexpr int n_kernels = 2;
+    constexpr int n_kernels = 9;
     std::vector<BenchmarkResult> results;
 
     auto run_one = [&](int k) {
