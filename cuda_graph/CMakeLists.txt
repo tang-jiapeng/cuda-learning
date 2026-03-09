@@ -1,0 +1,6 @@
+add_executable(cuda_graph cuda_graph.cu)
+add_executable(cuda_mem cuda_mem.cu)
+add_executable(cuda_mem_graph cuda_mem_graph.cu)
+target_include_directories(cuda_graph PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+target_include_directories(cuda_mem PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+target_include_directories(cuda_mem_graph PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
